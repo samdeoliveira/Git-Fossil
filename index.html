@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Git-Fossil</title>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤠</text></svg>">
+    <style>
+        :root { --sand: #e2b97a; --dirt: #8b5a2b; --sky: #a5d6f1; --accent: #d2691e; --gold: #ffd700; }
+        body { margin: 0; background: #1a1a1a; font-family: 'VT323', monospace; color: #4a3520; display: flex; flex-direction: column; align-items: center; padding: 10px; box-sizing: border-box; }
+
+        #game-stage {
+            width: 100%; max-width: 800px; height: 160px;
+            background: var(--sky); position: relative;
+            border-bottom: 8px solid var(--dirt); overflow: hidden; margin-top: 10px;
+            cursor: pointer; touch-action: manipulation;
+        }
+        #player { width: 50px; height: 50px; position: absolute; bottom: 0; left: 20px; font-size: 40px; z-index: 10; display: flex; align-items: center; justify-content: center; transition: bottom 0.1s; }
+        .jump { animation: jump-anim 0.5s ease-out; }
+        @keyframes jump-anim { 0%, 100% { bottom: 0; } 50% { bottom: 90px; } }
+        .obs { position: absolute; bottom: 0; font-size: 24px; animation: move-obs 1.8s linear infinite; }
+        @keyframes move-obs { from { right: -50px; } to { right: 110%; } }
+
+        .panel { 
+            width: 100%; max-width: 800px; background: #f4e4bc; border: 4px solid var(--dirt); 
+            margin: 20px 0; padding: 15px; box-sizing: border-box; box-shadow: 6px 6px 0 #000;
+        }
+        .ui-header { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+        @media (min-width: 600px) { .ui-header { flex-direction: row; } }
+
+        input { background: #fff; border: 3px solid var(--dirt); padding: 12px; font-family: 'VT323'; font-size: 1.5rem; flex-grow: 1; outline: none; width: 100%; box-sizing: border-box; }
+        button { background: var(--dirt); color: #fff; border: none; padding: 12px 25px; font-family: 'VT323'; font-size: 1.5rem; cursor: pointer; white-space: nowrap; }
+        button:active { transform: scale(0.98); }
+        
+        .artifact-box { margin-top: 20px; padding: 15px; border: 2px dashed var(--dirt); background: rgba(0,0,0,0.03); position: relative; word-wrap: break-word; }
+        .label { background: var(--dirt); color: #fff; padding: 2px 8px; display: inline-block; margin-bottom: 10px; font-size: 1.1rem; }
+        .fork-tag { background: #ff4444; color: white; padding: 2px 6px; font-size: 0.8rem; display: block; margin-bottom: 10px; width: fit-content; }
+        
+        .data-point { font-size: 1.2rem; margin: 5px 0; line-height: 1.2; }
+        .data-point b { color: var(--accent); }
+        
+        .verdict { margin-top: 20px; background: #3d2b1f; color: #f4e4bc; padding: 15px; font-size: 1.3rem; border-left: 8px solid var(--gold); line-height: 1.3; text-transform: uppercase; }
+        .status-badge { font-size: 1.1rem; color: #fff; background: var(--accent); padding: 5px 10px; margin-top: 10px; display: inline-block; }
+        .desc-tag { font-size: 0.9rem; color: #4a3520; display: block; margin-top: 5px; opacity: 0.8; font-style: italic; }
+    </style>
+</head>
+<body>
+
+    <div id="game-stage" onclick="jump()">
+        <div style="position:absolute; top:5px; left:10px; font-size:0.7rem; color:#4a3520; opacity:0.5">PULAR: TOUCH / ESPAÇO</div>
+        <div id="player">🤠</div>
+        <div id="obstacles"></div>
+    </div>
+
+    <div class="panel">
+        <div class="ui-header">
+            <input type="text" id="username" placeholder="USER DO GITHUB..." autocomplete="off">
+            <button onclick="deepScan()">ESCAVAR</button>
+        </div>
+        <div id="output">O ARQUEÓLOGO ESTÁ PRONTO PARA O DEBOCHE...</div>
+    </div>
+
+<script>
+    // --- WEB AUDIO API (Sons sem arquivos) ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function playJumpSound() {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(600, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    // --- MINI GAME ---
+    function jump() {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const p = document.getElementById('player');
+        if(!p.classList.contains('jump')) {
+            p.classList.add('jump');
+            playJumpSound();
+            setTimeout(() => p.classList.remove('jump'), 500);
+        }
+    }
+    window.onkeydown = (e) => { if(e.code === 'Space') { e.preventDefault(); jump(); } };
+
+    function spawn() {
+        const stage = document.getElementById('obstacles');
+        if(!stage) return;
+        const obs = document.createElement('div');
+        obs.className = 'obs';
+        obs.innerHTML = Math.random() > 0.5 ? '🦴' : '🌵';
+        stage.appendChild(obs);
+        setTimeout(() => obs.remove(), 1800);
+        setTimeout(spawn, 1200 + Math.random() * 2000);
+    }
+    spawn();
+
+    // --- ANALISADOR ---
+    async function deepScan() {
+        const user = document.getElementById('username').value.trim();
+        const output = document.getElementById('output');
+        const player = document.getElementById('player');
+        if(!user) return;
+
+        output.innerHTML = "<div style='text-align:center; padding:20px'>⛏️ REMOVENDO A TERRA DOS REPOSITÓRIOS...</div>";
+
+        try {
+            let repos = [];
+            for(let p=1; p<=5; p++) {
+                const res = await fetch(`https://api.github.com/users/${user}/repos?per_page=100&page=${p}&sort=created&direction=asc`);
+                const data = await res.json();
+                if(!data || !data.length) break;
+                repos = repos.concat(data);
+            }
+
+            const clean = repos.filter(r => r.name.toLowerCase() !== user.toLowerCase());
+            if(!clean.length) throw new Error("SÍTIO VAZIO");
+
+            const fossil = clean[0];
+            const apex = [...clean].sort((a,b) => new Date(b.pushed_at) - new Date(a.pushed_at))[0];
+            const totalStars = clean.reduce((s, r) => s + r.stargazers_count, 0);
+
+            // --- LÓGICA DE STATUS E AVATAR ---
+            let avatar = "🤠";
+            let status = "EXPLORADOR COMUM";
+            let desc = "Um arqueólogo padrão em busca de bugs.";
+
+            if (totalStars === 0) { 
+                avatar = "💀"; status = "CAVEIRA ESQUECIDA"; 
+                desc = "Ninguém deu estrela. É como se você nunca tivesse existido.";
+            } else if (totalStars < 20) { 
+                avatar = "🧗"; status = "ESCALADOR DE CÓDIGO"; 
+                desc = "Lutando para ser notado nas montanhas do GitHub.";
+            } else if (totalStars < 100) { 
+                avatar = "🧙‍♂️"; status = "MAGO DO CÓDIGO"; 
+                desc = "Você já consegue conjurar alguns scripts interessantes.";
+            } else if (totalStars < 500) { 
+                avatar = "🥷"; status = "NINJA DO OPEN SOURCE"; 
+                desc = "Rápido, letal e reconhecido pelas sombras das outras tribos.";
+            } else { 
+                avatar = "🐉"; status = "DRAGÃO LENDÁRIO"; 
+                desc = "Seus repositórios são tesouros guardados a sete chaves.";
+            }
+
+            if (fossil.fork) {
+                avatar = "💰";
+                status = "SAQUEADOR DE TUMBAS (FORKER)";
+                desc = "Seu primeiro artefato não é seu. Você roubou de outra civilização.";
+            }
+
+            if (clean.length > 150) {
+                avatar = "🧟";
+                status = "ZUMBI ACUMULADOR";
+                desc = "Você tem repositórios demais. É um cemitério de projetos abandonados.";
+            }
+
+            player.innerHTML = avatar;
+
+            output.innerHTML = `
+                <div class="artifact-box">
+                    <span class="label">🗿 RELÍQUIA PRIMORDIAL</span>
+                    ${fossil.fork ? '<span class="fork-tag">ARTEFATO ROUBADO (FORK)</span>' : ''}
+                    <div class="data-point">NOME: <b>${fossil.name}</b> (${new Date(fossil.created_at).getFullYear()})</div>
+                    <div class="data-point">DNA: <b>${fossil.language || 'PEDRA BRUTA'}</b></div>
+                </div>
+                <div class="artifact-box" style="border-color:var(--gold)">
+                    <span class="label" style="background:var(--gold); color:#000">🏰 ÚLTIMO MONUMENTO</span>
+                    <div class="data-point">NOME: <b>${apex.name}</b></div>
+                    <div class="data-point">LINGUAGEM: <b>${apex.language || 'MULTI-STACK'}</b></div>
+                    <div class="data-point">RECONHECIMENTO: <b>⭐ ${totalStars} ESTRELAS</b></div>
+                    <div class="status-badge">${status}</div>
+                    <span class="desc-tag">${desc}</span>
+                </div>
+                <div class="verdict">
+                    <b>📜 DIÁRIO DO ARQUEÓLOGO:</b><br>
+                    ${generateSarcasticVerdict(fossil, apex, clean.length, totalStars)}
+                </div>
+            `;
+
+        } catch(e) {
+            output.innerHTML = "<div style='color:red; text-align:center'>ERRO: O USUÁRIO SUMIU NA POEIRA DO TEMPO.</div>";
+        }
+    }
+
+    function generateSarcasticVerdict(fossil, apex, total, stars) {
+        const year1 = new Date(fossil.created_at).getFullYear();
+        const diff = new Date(apex.pushed_at).getFullYear() - year1;
+        const l1 = (fossil.language || 'Lixo').toUpperCase();
+        const l2 = (apex.language || 'Nada').toUpperCase();
+        const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+        let intro = "";
+        if (fossil.fork) {
+            intro = pick([
+               `ABRIMOS O SARCÓFAGO EM ${year1} E... SURPRESA! UM FORK. VOCÊ NEM SE DEU AO TRABALHO DE CRIAR ALGO SEU? `,
+                `A ESTRATIGRAFIA REVELA QUE EM ${year1} VOCÊ ERA UM SAQUEADOR. SEU PRIMEIRO REPO FOI ROUBADO. `,
+                `O FÓSSIL MAIS ANTIGO (${fossil.name}) É UM FORK. COMEÇOU NO "COPIA E COLA", NÉ? `,
+                `EM ${year1} VOCÊ JÁ MOSTRAVA SEU TALENTO: PEGAR O TRABALHO DOS OUTROS E DIZER QUE É SEU. `,
+                `ACHAMOS UM ARTEFATO DE ${year1}, MAS A ASSINATURA NÃO É SUA. UM CLÁSSICO SAQUEADOR DE TUMBAS. `,
+                `REGISTROS DE ${year1} INDICAM QUE SUA PRIMEIRA AÇÃO FOI SURRUPIAR UM CÓDIGO ALHEIO. `,
+                `A CAMADA DE ${year1} ESTÁ INFESTADA DE PLÁGIO. SEU PRIMEIRO PASSO FOI UM FORK. `,
+                `ESTE ARTEFATO DE ${year1} É APENAS UMA CÓPIA CARBONO DO TRABALHO DE ALGUÉM MAIS INTELIGENTE. `,
+                `VOCÊ É O INDIANA JONES AO CONTRÁRIO: EM ${year1} VOCÊ SÓ PEGAVA AS RELÍQUIAS E NÃO DEIXAVA NADA. `,
+                `DESDE ${year1} VOCÊ VIVE DE RESTOS DE OUTRAS CIVILIZAÇÕES. BELO FORK! `,
+                `EM ${year1} VOCÊ NÃO TINHA IDEIAS, ENTÃO APENAS CLONOU UMA. QUE ORIGINAL. `,
+                `O PRIMEIRO REGISTRO HISTÓRICO É UM FORK. UMA CARREIRA CONSTRUÍDA SOBRE O ESFORÇO ALHEIO. `,
+                `PARA O ARQUEÓLOGO, UM FORK EM ${year1} É O EQUIVALENTE A UM GRAFITE NUMA PIRÂMIDE. `,
+                `ACHAMOS SEU PRIMEIRO CRIME EM ${year1}: ROUBAR CÓDIGO COM A DESCULPA DE APRENDER. `
+            ]);
+        } else {
+            intro = pick([
+                `EM ${year1}, VOCÊ TENTOU CRIAR ALGO DO ZERO COM ${l1}. UMA CORAGEM ADMIRÁVEL PARA ALGUÉM TÃO LIMITADO. `,
+                `O REGISTRO DE ${year1} MOSTRA UMA TENTATIVA ORIGINAL. UM ARTEFATO AUTÊNTICO, EMBORA TOSCO. `,
+                `DESDE ${year1} VOCÊ VEM TENTANDO DOMINAR O MUNDO COM CÓDIGO. `,
+                `EM ${year1}, VOCÊ SOLTOU NO MUNDO UM ARTEFATO EM ${l1} QUE DEVERIA TER FICADO ENTERRADO. `,
+                `A ESCAVAÇÃO EM ${year1} REVELOU ALGO CHAMADO ${fossil.name}. O MUNDO NUNCA MAIS FOI O MESMO (PARA PIOR). `,
+                `REGISTROS PRIMORDIAIS DE ${year1} INDICAM QUE VOCÊ ACHAVA QUE SABIA PROGRAMAR EM ${l1}. `,
+                `ACHAMOS UM MONUMENTO DE ${year1}. É FEIO, MAS É SEU. PARABÉNS PELO ESFORÇO EM ${l1}. `,
+                `A CAMADA GEOLÓGICA DE ${year1} TRAZ RESTOS DE UM SCRIPT EM ${l1}. UMA VERDADEIRA RELÍQUIA DA INOCÊNCIA. `,
+                `EM ${year1}, VOCÊ ACHOU QUE ${l1} ERA A RESPOSTA. O ARQUEÓLOGO ACHA QUE ERA O PROBLEMA. `,
+                `RECOLHEMOS UM PEDAÇO DE LIXO... DIGO, DE CÓDIGO DE ${year1} FEITO EM ${l1}. `,
+                `O ANO ERA ${year1}. O ARTEFATO ERA ${fossil.name}. A LINGUAGEM ERA ${l1}. O RESULTADO? TRISTE. `,
+                `ESTAMOS ANALISANDO SUA PRIMEIRA TENTATIVA DE SER HUMANO EM ${year1} USANDO ${l1}. `,
+                `EM ${year1} VOCÊ ERA SÓ UM FETO DO DESENVOLVIMENTO BRINCANDO COM ${l1}. `,
+                `O ARQUEÓLOGO ENCONTROU SUA "OBRA-PRIMA" DE ${year1}. AINDA BEM QUE O TEMPO COBRIU ISSO COM TERRA. `,
+                `NA ALVORADA DE ${year1}, VOCÊ MANIPULAVA O ${l1} COMO UM HOMEM DAS CAVERNAS MANIPULA O FOGO. `,
+                `O REGISTRO FÓSSIL DE ${year1} É UMA PROVA DE QUE VOCÊ É PERSISTENTE, MESMO SEM MOTIVO. `,
+                `ESCAVAMOS UM DEPÓSITO DE ${l1} DATADO DE ${year1}. ACHEI QUE FOSSE UM BUG, MAS ERA SÓ SEU CÓDIGO. `,
+                `EM ${year1}, VOCÊ DEIXOU SUA PRIMEIRA CICATRIZ NO GITHUB COM O PROJETO ${fossil.name}. `,
+                `O ARQUEÓLOGO ESTÁ EM LÁGRIMAS VENDO O QUE VOCÊ FEZ COM ${l1} EM ${year1}. `,
+                `VOCÊ COMEÇOU EM ${year1}. O MUNDO TE PERDOU, MAS O ARQUEÓLOGO NÃO ESQUECE. `,
+                `A ORIGEM DE TUDO: ${year1}. UM ARTEFATO EM ${l1} QUE PROVA QUE VOCÊ JÁ FOI JOVEM E CONFUSO. `,
+                `ESTE ARTEFATO DE ${year1} EM ${l1} É TÃO INSTÁVEL QUE QUASE QUEBROU MINHA PICARETA. `,
+                `DESDE ${year1} ESPALHANDO FRAGMENTOS DE ${l1} PELO CIBERESPAÇO. `,
+                `ACHAMOS SEU PRIMEIRO GRITO DE SOCORRO EM ${year1}, DISFARÇADO DE REPOSITÓRIO. `,
+                `EM ${year1}, VOCÊ ERA SÓ UM APRENDIZ DE FEITICEIRO FAZENDO POÇÕES ESTRAGADAS EM ${l1}. `,
+                `A ESTRATIGRAFIA DE ${year1} É COMPOSTA BASICAMENTE DE 'HELLO WORLD' E DESESPERO. `,
+                `O PRIMEIRO MONUMENTO (${fossil.name}) EM ${l1} MOSTRA QUE VOCÊ TINHA GRANDES SONHOS EM ${year1}. Pena. `,
+                `REVELAMOS UM DEPÓSITO DE ${year1}. VOCÊ REALMENTE ACHOU QUE ESSE CÓDIGO EM ${l1} IA FUNCIONAR? `,
+                `O ARQUEÓLOGO ANALISOU SUA PRIMEIRA CAMADA DE ${year1}. CONCLUSÃO: VOCÊ SEMPRE FOI ASSIM. `,
+                `VOCÊ ENTERROU ISSO EM ${year1} POR ALGUM MOTIVO. O ARQUEÓLOGO ACABOU DE DESCOBRIR QUE O MOTIVO ERA VERGONHA. `
+            ]);
+        }
+
+        let starReview = "";
+        if (stars === 0) {
+            starReview = pick([
+                "ZERO ESTRELAS? SEU CÓDIGO É TÃO ÚTIL QUANTO UM PENTE PARA UM CARECA. ",
+                "NINGUÉM TE AMA NO GITHUB. SEUS REPOS SÃO FANTASMAS QUE NINGUÉM QUER VER. ",
+                "ESTAMOS ANALISANDO UM EREMITA. ZERO ESTRELAS É UM RECORDE DE INVISIBILIDADE. ",
+                "ZERO ESTRELAS. UMA EXISTÊNCIA SOLITÁRIA NAS PROFUNDEZAS DO ESQUECIMENTO. ",
+                "SEU PERFIL É UM VÁCUO DE RECONHECIMENTO. NEM OS BOTS DE SPAM CLICARAM AQUI. ",
+                "ESTE CÓDIGO É TÃO IRRELEVANTE QUE O ALGORITMO O IGNORA POR COMPLETO. ",
+                "ACHAMOS UM ARTEFATO INTOCADO. ZERO ADORAÇÃO DETECTADA NESTE SÍTIO. ",
+                "O BRILHO DAS SUAS ESTRELAS É IGUAL AO VÁCUO DO ESPAÇO: INEXISTENTE. ",
+                "PARECE QUE VOCÊ CODIFICA DENTRO DE UM BURACO NEGRO. NENHUMA LUZ SAI DAÍ. ",
+                "ZERO ESTRELAS. VOCÊ É O AGENTE SECRETO DO OPEN SOURCE (NINGUÉM TE CONHECE). ",
+                "ESTE SÍTIO FOI ABANDONADO PELOS DEUSES. ZERO ESTRELAS ENCONTRADAS. ",
+                "NÃO HÁ LUZ NESTA CAVERNA. ZERO ESTRELAS CATALOGADAS. ",
+                "VOCÊ É O ÚNICO QUE SABE QUE ESSE CÓDIGO EXISTE. ZERO ESTRELAS. ",
+                "NÍVEL DE POPULARIDADE: ERMITÃO DE DESERTO. ZERO ESTRELAS. "
+            ]);
+        } else if (stars < 10) {
+            starReview = pick([
+                `SÓ ${stars} ESTRELAS? DEVE TER SIDO SUA MÃE E SEUS AMIGOS QUE DERAM POR PENA. `,
+                `COM ${stars}★, VOCÊ MAL CONSEGUE COMPRAR UM CAFÉ NA CANTINA. `,
+                `SINAIS DE PRESTÍGIO MÍNIMO (${stars}★). O SUFICIENTE PARA NÃO SER ENTERRADO VIVO. `,
+                `APENAS ${stars}★. ALGUNS NÔMADES PASSARAM E DEIXARAM UMA ESMOLA. `,
+                `ESSE BRILHO DE ${stars}★ É TÃO FRACO QUE PRECISAMOS DE LANTERNAS. `,
+                `NOTAMOS ${stars}★. É O EQUIVALENTE A UM 'JOINHA' DE UM TIO NO FACEBOOK. `,
+                `VOCÊ TEM ${stars} ESTRELAS. ISSO É MAIS QUE NADA, MAS AINDA É QUASE NADA. `,
+                `A ARQUEOLOGIA INDICA QUE ${stars} PESSOAS SE PERDERAM E CLICARAM NA ESTRELA. `,
+                `COM ${stars}★, SEU LEGADO É TÃO GRANDE QUANTO UMA FORMIGA NUM DESERTO. `,
+                `ACHAMOS ${stars} RESQUÍCIOS DE RECONHECIMENTO. É UM COMEÇO, OU O FIM. `,
+                `APENAS ${stars} ESTRELAS. É O TIPO DE ARTEFATO QUE A GENTE ACHA NO LIXO. `,
+                `COM ${stars}★, VOCÊ É QUASE FAMOSO NO SEU QUARTO. `
+            ]);
+        } else if (stars < 50) {
+            starReview = pick([
+                `COM ${stars}★, VOCÊ É TIPO UM ARTISTA DE RUA: ALGUNS PARAM PRA OLHAR, MAS LOGO ESQUECEM. `,
+                `NÍVEL DE PRESTÍGIO RESPEITÁVEL (${stars}★). UM LÍDER DE CLÃ EM ASCENSÃO. `,
+                `EXISTEM ALGUNS SINAIS DE PRESTÍGIO (${stars}★). VOCÊ NÃO FOI TOTALMENTE ESQUECIDO. `,
+                `COM ${stars}★, VOCÊ JÁ CONSEGUE ENGANAR ALGUNS RECRUTADORES DESAVISADOS. `,
+                `${stars} ESTRELAS INDICAM QUE VOCÊ É O REI DOS SEUS 3 AMIGOS DE FACULDADE. `,
+                `VOCÊ ESTÁ SAINDO DA LAMA COM ESSAS ${stars} ESTRELAS. CONTINUE CAVANDO. `,
+                `ESTE ARTEFATO ATRAIU ${stars} CURIOSOS. UMA PEQUENA SEITA ESTÁ SE FORMANDO. `,
+                `RECOLHEMOS ${stars}★. VOCÊ JÁ PODE DAR PALESTRA EM ESCOLA DE ENSINO MÉDIO. `,
+                `COM ${stars}★, SEU NOME COMEÇA A SER SOPRADO PELO VENTO DA HISTÓRIA. `,
+                `AS ${stars} ESTRELAS MOSTRAM QUE VOCÊ TEM UM PÚBLICO FIEL DE SOBREVIVENTES. `
+            ]);
+        } else if (stars < 100) {
+            starReview = pick([
+                `VOCÊ TEM ${stars}★. JÁ PODE SE CONSIDERAR UM "INFLUENCIADOR DE CÓDIGO" PARA MEIA DÚZIA DE NERDS. `,
+                `ALERTA DE CELEBRIDADE: ${stars}★ INDICAM UM MONUMENTO VISITADO POR PEQUENAS MULTIDÕES. `,
+                `INFLUÊNCIA DETECTADA. ${stars} TRIBOS DIFERENTES RECONHECEM ESTE CÓDIGO. `,
+                `COM ${stars}★, VOCÊ JÁ PODE COMEÇAR A TER UM EGO LEVEMENTE INFLADO. `,
+                `QUASE UM NOBRE. ${stars} PESSOAS ACHAM QUE VOCÊ SABE O QUE ESTÁ FAZENDO. `,
+                `AS ${stars}★ PROVAM QUE SEU CÓDIGO SOBREVIVEU À PRIMEIRA ONDA DE CRÍTICAS. `,
+                `RECONHECIMENTO SÓLIDO: ${stars}★. VOCÊ JÁ É UM ARTEFATO DE VALOR NO MERCADO. `,
+                `COM ${stars} ESTRELAS, VOCÊ É O ARQUEÓLOGO QUE ACHOU UM BAÚ DE PRATA. `,
+                `ESTE SÍTIO COM ${stars}★ JÁ FOI OBJETO DE ESTUDO DE ALGUNS CURIOSOS. `
+            ]);
+        } else if (stars < 500) {
+            starReview = pick([
+                `COM ${stars} ESTRELAS, VOCÊ É UMA RELÍQUIA SAGRADA. OUTRAS TRIBOS COPIAM SEUS RITUAIS. `,
+                `ESTE SÍTIO É UM PONTO TURÍSTICO COM ${stars} ADORADORES. UM MONUMENTO ÉPICO. `,
+                `O BRILHO DE ${stars} ESTRELAS É CEGANTE. VOCÊ É UM GUERREIRO DE ELITE. `,
+                `VOCÊ É QUASE UM DEUS. ${stars} PESSOAS REZAM PELO SEU PRÓXIMO COMMIT. `,
+                `ESTAMOS DIANTE DE UMA CELEBRIDADE DA ANTIGUIDADE COM ${stars}★ DE PURO PODER. `,
+                `COM ${stars}★, SEU CÓDIGO É CITADO EM TABULEIROS DE ARGILA POR TODO O MUNDO. `,
+                `VOCÊ CONSTRUIU UMA PIRÂMIDE DE ${stars}★. UM FEITO PARA POUCOS MORTAIS. `,
+                `AS TRIBOS SE REÚNEM PARA VER ESSAS ${stars} ESTRELAS. VOCÊ É UM MESTRE. `,
+                `O ARQUEÓLOGO ESTÁ IMPRESSIONADO: ${stars}★ É UM TESOURO REAL. `
+            ]);
+        } else {
+            starReview = pick([
+                `MEU DEUS! ${stars} ESTRELAS! VOCÊ É O FARAÓ DESSA PORRA. TODOS SE CURVAM AO SEU REPOSITÓRIO. `,
+                `ACHAMOS UM DEUS DO OPEN SOURCE. ${stars}★ É ALGO QUE SÓ SE VÊ EM LIVROS. `,
+                `ESTE PERFIL É O SOL DO SISTEMA SOLAR. ${stars} ESTRELAS QUEIMANDO A RETINA. `,
+                `ISSO NÃO É UM PERFIL, É UM TESTAMENTO DA DOMINAÇÃO GLOBAL COM ${stars}★. `,
+                `ALERTA DE DIVINDADE DETECTADO! ${stars}★ É UM MONUMENTO QUE DURARÁ MILÊNIOS. `,
+                `O ARQUEÓLOGO CAIU DE JOELHOS PERANTE ESSAS ${stars} ESTRELAS. INSANO! `,
+                `VOCÊ NÃO CODIFICA, VOCÊ ESCREVE A HISTÓRIA COM ${stars}★ DE OURO PURO. `,
+                `O UNIVERSO SE CURVA ÀS SUAS ${stars} ESTRELAS. O QUE VOCÊ COME NO CAFÉ? `,
+                `É UMA HONRA ESCAVAR ALGUÉM COM ${stars}★. VOCÊ É UMA LENDA IMORTAL. `
+            ]);
+        }
+
+        let evolution = (l1 === l2 && diff > 3) ? 
+            pick([
+                `HÁ ${diff} ANOS PRESO NO ${l1}. VOCÊ NÃO EVOLUIU, VOCÊ SÓ ENVELHECEU. `,
+                `ESTAGNAÇÃO DETECTADA: ${diff} ANOS NO MESMO ${l1}. FIDELIDADE OU PURO MEDO? `,
+                `PARECE QUE O ${l1} É A SUA ZONA DE CONFORTO E TAMBÉM SEU TÚMULO HÁ ${diff} ANOS. `,
+                `O INDIVÍDUO SE RECUSA A MUDAR. ${diff} ANOS RESPIRANDO APENAS ${l1}. `,
+                `UMA RELÍQUIA CONSERVADA EM FORMOL: ${diff} ANOS SEM SAIR DO ${l1}. `,
+                `O TEMPO PAROU PARA VOCÊ EM ${l1} HÁ ${diff} ANOS. O MUNDO MUDOU, VOCÊ NÃO. `,
+                `SÃO ${diff} ANOS REPETINDO O MESMO ERRO EM ${l1}. UMA CONSISTÊNCIA ASSUSTADORA. `,
+                `O ARQUEÓLOGO ACHOU UM FÓSSIL QUE NÃO SE MEXE HÁ ${diff} ANOS FORA DO ${l1}. `
+            ]) : 
+            pick([
+                `SAIU DO ${l1} E CHEGOU NO ${l2}. É COMO SAIR DA IDADE DA PEDRA E DESCOBRIR O FOGO. `,
+                `MUTAÇÃO DETECTADA: UMA TRANSIÇÃO HISTÓRICA DE ${l1} PARA ${l2}. O CÉREBRO EVOLUIU. `,
+                `O CÉREBRO DIGITAL EVOLUIU DA PEDRA LASCADA EM ${l1} PARA O COMPLEXO ${l2}. `,
+                `ABANDONOU O PRIMITIVO ${l1} EM BUSCA DA SOBREVIVÊNCIA NO ${l2}. JORNADA ÉPICA. `,
+                `DE ${l1} PARA ${l2}: UMA METAMORFOSE QUE ATÉ O ARQUEÓLOGO RESPEITA. `,
+                `VOCÊ SOBREVIVEU ÀS ERAS, MUDANDO DE ${l1} PARA ${l2} COMO UM CAMALEÃO. `,
+                `A ESCAVAÇÃO REVELA QUE VOCÊ DEIXOU O ${l1} PARA TRÁS E ABRAÇOU O ${l2}. INTELIGENTE. `,
+                `UMA EVOLUÇÃO CLARA: O ARTEFATO MUDOU DE ${l1} PARA ${l2} DURANTE OS SÉCULOS. `
+            ]);
+
+  const final = pick([
+    "VEREDITO: O TEMPO PASSOU, MAS A QUALIDADE CONTINUA ENTERRADA.",
+    "RESUMO: UM CASO FASCINANTE DE TEIMOSIA DIGITAL.",
+    "CONCLUSÃO: VOLTE PARA A CAVERNA E TENTE NOVAMENTE.",
+    "O ARQUEÓLOGO ESTÁ DECEPCIONADO, MAS NÃO SURPRESO.",
+    "PELO MENOS VOCÊ NÃO DESISTIU (AINDA), O QUE É UMA PENA.",
+    "ESTADO DE CONSERVAÇÃO: PIOR QUE DISQUETE EXPOSTO AO SOL.",
+    "VEREDITO: SEU CÓDIGO É UMA PROVA DE QUE O CAOS EXISTE.",
+    "RECOMENDAÇÃO: ENTERRE NOVAMENTE E JOGUE CIMENTO EM CIMA.",
+    "ESTE SÍTIO ARQUEOLÓGICO DEVERIA TER SIDO LACRADO EM 1990.",
+    "É UM MILAGRE QUE ISSO AINDA NÃO TENHA CAUSADO UM CURTO-CIRCUITO.",
+    "O ARQUEÓLOGO DECLARA ESTE PERFIL COMO ÁREA DE DESASTRE TECNOLÓGICO.",
+    "CONCLUSÃO: A EVOLUÇÃO DAS ESPÉCIES NÃO CHEGOU NESSE REPOSITÓRIO.",
+    "VEREDITO: VOCÊ ESCREVE CÓDIGO OU ESTÁ APENAS BATENDO NO TECLADO?",
+    "UM EXEMPLO RARO DE CÓDIGO QUE DÁ MEDO ATÉ EM FANTASMA.",
+    "PARABÉNS, VOCÊ É A RAZÃO PELO QUAL O GITHUB TEM BOTÃO DE DELETE.",
+    "O ARQUEÓLOGO VAI PRECISAR DE TERAPIA APÓS ANALISAR ISSO.",
+    "RESUMO: UMA JORNADA ÉPICA RUMO AO ABSOLUTO NADA.",
+    "PARECE QUE O TEMPO FOI O ÚNICO QUE TRABALHOU AQUI.",
+    "CONCLUSÃO: UMA ESTRATIGRAFIA COMPOSTA 90% POR GAMBIARRAS.",
+    "O VEREDITO É: CHAMEM UM EXORCISTA DE SOFTWARE.",
+    "RECOMENDAÇÃO: TROQUE DE PROFISSÃO OU APRENDA A FAZER CAFÉ.",
+    "SE CÓDIGO FOSSE OURO, VOCÊ ESTARIA MORANDO NA RUA.",
+    "O ARQUEÓLOGO ESTÁ IMPRESSIONADO COM TANTA PERSISTÊNCIA NO ERRO.",
+    "CONCLUSÃO: O TIPO DE ARTEFATO QUE A GENTE FINGE QUE NÃO ACHOU.",
+    "VEREDITO: ISSO NÃO É UM PERFIL, É UM PEDIDO DE SOCORRO.",
+    "RESUMO: UMA VIDA INTEIRA DE COMMITS E NENHUM SENTIDO.",
+    "VOCÊ É O ELO PERDIDO ENTRE O ÁBACO E O COMPUTADOR.",
+    "O ARQUEÓLOGO DESISTIU DE ENTENDER E SÓ VAI TOMAR UM WHISKY.",
+    "CONCLUSÃO: O CÓDIGO ESTÁ MORTO, MAS O BUG AINDA RESPIRA.",
+    "VEREDITO: UM MUSEU DE HORRORES COM INTERFACE WEB.",
+    "PARECE QUE VOCÊ TENTA APAGAR O INCÊNDIO COM GASOLINA.",
+    "O ARQUEÓLOGO RECOMENDA O USO DE UMA MÁQUINA DE ESCREVER.",
+    "RESUMO: UMA COLEÇÃO DE PROJETOS QUE NUNCA VIRAM O SOL.",
+    "VEREDITO: VOCÊ É UM ARTISTA DA DESORDEM DIGITAL.",
+    "CONCLUSÃO: SEU CÓDIGO É O QUE OS ALIENÍGENAS VÃO USAR PARA NOS JULGAR.",
+    "O ARQUEÓLOGO DECLARA ESTE USUÁRIO COMO PATRIMÔNIO DO LEGADO.",
+    "VEREDITO: UM FÓSSIL QUE DEVERIA TER FICADO EXTINTO.",
+    "CONCLUSÃO: NUNCA ANTES TANTO FOI ESCRITO PARA DIZER TÃO POUCO.",
+    "O ARQUEÓLOGO VAI QUEIMAR ESTE RELATÓRIO PARA NÃO DEIXAR RASTROS.",
+    "RESUMO: UM GRANDE 'E DAÍ?' NA HISTÓRIA DA COMPUTAÇÃO."
+]);
+
+        return (intro + starReview + evolution + final).toUpperCase();
+    }
+</script>
+</body>
+</html>
