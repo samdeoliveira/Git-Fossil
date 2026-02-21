@@ -8,6 +8,8 @@ Sabe aquele seu primeiro repositório de 2014 feito em PHP ou aquele "Hello Worl
 
 O Git-Fossil analisa o perfil de qualquer usuário do GitHub e gera um veredito baseado em evidências históricas: <br>
 https://git-fossil.vercel.app/
+![Gravando-2026-02-21-140536](https://github.com/user-attachments/assets/ee9bbbeb-7499-4b59-9ddf-dbd385ffeb59)
+
 * **🗿 Relíquia Primordial:** Identifica o seu primeiro repositório (o "Fóssil"). Se for um Fork, você será oficialmente tachado como um Saqueador de Tumbas.
 * **🏰 Último Monumento:** Analisa seu trabalho mais recente e o seu nível de prestígio (estrelas totais).
 * **🧬 Evolução das Espécies:** Compara a linguagem do seu início com a atual. Se você usa a mesma linguagem há 5 anos, o Arqueólogo vai te chamar de "Fóssil em Formol".
